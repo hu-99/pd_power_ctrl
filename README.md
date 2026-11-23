@@ -2,8 +2,8 @@
 
 [![MCU](https://img.shields.io/badge/MCU-PY32F003F18P6_(Cortex--M0%2B)-blue)]()
 [![RTOS](https://img.shields.io/badge/RTOS-FreeRTOS_v11.2.0_(Static_NoHeap)-brightgreen)]()
-[![Tests](https://img.shields.io/badge/Host_Tests-23%2F23_Passed-success)]()
-[![Footprint](https://img.shields.io/badge/ROM%2FRAM-34.41KB_%2F_5.87KB-orange)]()
+[![Tests](https://img.shields.io/badge/Host_Tests-25%2F25_Passed-success)]()
+[![Footprint](https://img.shields.io/badge/ROM%2FRAM-34.80KB_%2F_5.87KB-orange)]()
 [![Bench](https://img.shields.io/badge/Bench_Verified-20.02W_%7C_%C2%B10.02%25-red)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
@@ -28,6 +28,10 @@
 | :---: | :---: |
 | ![5W稳态串口日志](doc/assets/bench_uart_5w_precision.png) | ![OCP黑匣子串口日志](doc/assets/bench_uart_ocp_blackbox.png) |
 
+**全自动 `Auto-PD` 二级升压（`5V → 9V → 12V, 20W`）+ `vSafe5V` 停机安全回落（`12V → 5V`）真机同步波形（`COM7` 实时录数）：**
+
+![Auto-PD 与 vSafe5V 真机实测波形](doc/assets/bench_autopd_vsafe5v_waveform.png)
+
 ---
 
 ## 核心实测指标一览
@@ -36,10 +40,10 @@
 | :--- | :--- | :--- |
 | **恒功率闭环精度** | **`±1 mW` (`±0.02%`)** | `10Ω` 实板 `5W` 稳态 `4999~5001 mW`，`10W` 稳态 `9996 mW`（`0.04%`），阶跃零超调 |
 | **满载实测能力** | **`20.02 W`**（`11.74V / 1.719A`） | `10Ω // 15Ω = 6Ω` 并联负载，电流与商业炬为表偏差仅 `~0.5%` |
-| **Flash / SRAM 占用** | **`34.41 KB` / `5.87 KB`** | 仅 `63.75KB / 7.97KB` 可用空间下集成全静态 FreeRTOS + 双 DMA + 彩屏 + 黑匣子 |
-| **三任务满载栈水位** | **`HWM = 63 / 101 / 73 words`** | `CTRL(160)` / `PD(160)` / `LOG(192)` 实测各剩 `252B / 404B / 292B`，零堆分配 |
+| **Flash / SRAM 占用** | **`34.80 KB` / `5.87 KB`** | 仅 `63.75KB / 7.97KB` 可用空间下集成全静态 FreeRTOS + 双 DMA + 彩屏 + 黑匣子 + `vSafe5V` |
+| **三任务满载栈水位** | **`HWM = 62 / 80 / 68 words`** | `CTRL(160)` / `PD(160)` / `LOG(192)` 全功能满载各剩 `248B / 320B / 272B`，零堆分配 |
 | **彩屏背景压缩** | **`25.0 KB → 6.25 KB` (4:1)** | 自研 M0+ 无除法 `BC1/DXT1` 软解（`PSNR 34.66 dB`），仅用 `1,280B` 单条带缓冲 |
-| **自动化验证门禁** | **`23 / 23` 通过，Keil `0 Error / 0 Warning`** | PC 宿主机 MinGW GCC (`-Werror`) + Mock I2C/Flash 全覆盖（含 `Auto-PD` 升挡逻辑） |
+| **自动化验证门禁** | **`25 / 25` 通过，Keil `0 Error / 0 Warning`** | PC 宿主机 MinGW GCC (`-Werror`) + Mock I2C/Flash 全覆盖（含 `Auto-PD` 与 `vSafe5V`） |
 
 ---
 
@@ -91,9 +95,9 @@ flowchart LR
 
 | 任务 | 优先级 | 周期 | 静态栈分配 | 满载实测峰值 / 剩余 (`HWM`) | 核心职责 |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`Task_Ctrl`** | `3` (最高) | `20 ms` | `160 words` (`640 B`) | `388 B` / **`252 B` (`63w`)** | `INA` 采压采流、定点恒功率 PI、软启动斜坡、OVP/OCP/OTP 瞬时关管 |
-| **`Task_PD`** | `2` | `50 ms` | `160 words` (`640 B`) | `236 B` / **`404 B` (`101w`)** | `HUSB238` 6 档 PDO 择优协商、断连回退 `5V`、`Auto-PD` 饱和自动升挡 |
-| **`Task_Log`** | `1` (最低) | `50 ms` | `192 words` (`768 B`) | `476 B` / **`292 B` (`73w`)** | 串口 CLI、`200ms` 彩屏差分刷新、异步 Flash 黑匣子写盘、三任务心跳汇总喂 `IWDG` |
+| **`Task_Ctrl`** | `3` (最高) | `20 ms` | `160 words` (`640 B`) | `392 B` / **`248 B` (`62w`)** | `INA` 采压采流、定点恒功率 PI、软启动斜坡、OVP/OCP/OTP 瞬时关管 |
+| **`Task_PD`** | `2` | `50 ms` | `160 words` (`640 B`) | `320 B` / **`320 B` (`80w`)** | `HUSB238` 6 档 PDO 择优协商、`Auto-PD` 饱和自动升挡、`vSafe5V` 停机/故障安全降压 |
+| **`Task_Log`** | `1` (最低) | `50 ms` | `192 words` (`768 B`) | `496 B` / **`272 B` (`68w`)** | 串口 CLI、`200ms` 彩屏差分刷新、异步 Flash 黑匣子写盘、三任务心跳汇总喂 `IWDG` |
 
 **`8,192 B (8.00 KB)` SRAM 精准分区：**
 - **链接器保留顶段 `NOINIT` 遗言区**（`0x20001FE0..0x20001FFF`）：`32 B`（专存 `IWDG` 复位前最后一刻电压/电流/占空比/失联任务掩码，热复位不清零）
@@ -109,7 +113,7 @@ flowchart LR
 
 1. **极限资源下的全静态 RTOS + 双通道 DMA**：在 `8KB SRAM` 上零 `malloc` 运行 FreeRTOS 三任务；`DMA1_CH1` 零 CPU 开销持续采样内部温度与 `VREFINT`（实时校正 `VDDA` 并驱动 `70~85°C` 线性过温降功率），`DMA1_CH2` 异步推送 `12MHz SPI1` 彩屏像素，完全不阻塞 `20ms` 功率闭环。
 2. **软硬解耦 + PC 宿主机门禁测试**：纯 C99 业务层（`Logic_PureC/`）与外设驱动层（`ExtDev/`）通过 `i2c_bus_ops_t` / Flash 回调完全解耦，脱离 MCU 即可在 PC 端用 MinGW GCC (`-Wall -Wextra -Werror`) 跑通 `23/23` 单元与故障注入测试。
-3. **`Auto-PD` 饱和逐级自动升压挡**：当前电压顶满占空比（`>=940pm`）且实测功率低于目标 `92%` 持续 `1.0s` 时，自动向充电器请求更高一档 PDO（`5V→9V→12V→15V→20V`）；内置 **`I>=20mA` 空载防误升**、`1.5s` 升档冷却、故障锁存屏蔽与最高档自动止步四道安全闸（已通过宿主机全路径单测与 Keil 零警告编译）。
+3. **`Auto-PD` 饱和升压 + `vSafe5V` 安全回落闭环**：带载占空比顶满（`>=940pm`）且欠功率持续 `1.0s` 时自动逐级升档（`5V→9V→12V→15V→20V`，内置 `I>=20mA` 空载防误升与 `1.5s` 冷却）；带载停机 (`P 0`) 等 `500ms` 电流归零后自动退回 **`5V (vSafe5V)`**、故障锁存立即降回 `5V`（同时兼容停载后手动 `V` 空载测充电头），已实板跑通 `5V→9V→12V (20W)→5V` 全流程。
 4. **协作看门狗 + 防掉电撕裂双页黑匣子**：三任务心跳位图汇总由最低优先级任务喂 `IWDG`；末两页 `0x0800FF00/FF80` Flash（单调 `seq + IEEE CRC32` 双页乒乓，正常开机零磨损）配合 `NOINIT` 遗言区，真机实测 `UVP / OVP / OCP_S / OTP / IWDG` 全路径可追溯。
 5. **8KB 内存无除法 `BC1` 4:1 彩屏子系统**：自研 Python PCA+最小二乘编码器 (`Tools/img2bc1.py`) 与 M0+ 无除法软解器，仅用 `1,280B` 单条带缓冲实现 `O(1)` 局部背景解码 + 透明叠字刷新。
 

@@ -113,6 +113,41 @@ void pd_auto_boost_init(pd_auto_boost_t *ab);
  */
 uint16_t pd_auto_boost_step(pd_auto_boost_t *ab, const pd_auto_boost_input_t *in);
 
+typedef enum {
+    PD_SAFE_DROP_NONE = 0,
+    PD_SAFE_DROP_IDLE,
+    PD_SAFE_DROP_FAULT
+} pd_safe_drop_reason_t;
+
+typedef struct {
+    bool was_loaded;
+    bool fault_handled;
+    uint8_t idle_ticks;
+} pd_safe_5v_t;
+
+/**
+ * @brief Initialize vSafe5V idle/fault fallback supervisor.
+ */
+void pd_safe_5v_init(pd_safe_5v_t *sf);
+
+/**
+ * @brief Notify supervisor that the user explicitly requested a manual voltage
+ *        while idle so the rail will not be forced back to 5V.
+ */
+void pd_safe_5v_notify_manual_v(pd_safe_5v_t *sf);
+
+/**
+ * @brief Evaluate one periodic tick (50ms) of vSafe5V fallback protection.
+ *
+ * - Latched fault (>5V): drops immediately to 5V (PD_SAFE_DROP_FAULT).
+ * - Active load turned off (target_power_mw == 0 while >5V): waits 500ms for
+ *   PWM/current to settle to zero, then drops to 5V (PD_SAFE_DROP_IDLE).
+ */
+pd_safe_drop_reason_t pd_safe_5v_step(pd_safe_5v_t *sf,
+                                      uint16_t active_mv,
+                                      uint32_t target_power_mw,
+                                      bool fault_active);
+
 /**
  * @brief Execute one deterministic periodic step of the PD sink policy FSM.
  */

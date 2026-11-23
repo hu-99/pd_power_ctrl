@@ -10,6 +10,7 @@
 #define PD_AUTOBOOST_SHORTFALL_PCT    92U
 #define PD_AUTOBOOST_SAT_TICKS        20U /* 20 * 50ms = 1.0s sustained saturation */
 #define PD_AUTOBOOST_COOLDOWN_TICKS   30U /* 30 * 50ms = 1.5s settle after step-up */
+#define PD_SAFE5V_IDLE_DELAY_TICKS    10U /* 10 * 50ms = 500ms settle after P=0 before dropping rail */
 
 static const uint16_t k_profile_mv[PD_SINK_PROFILE_COUNT] = {
     5000U, 9000U, 12000U, 15000U, 18000U, 20000U
@@ -121,6 +122,70 @@ uint16_t pd_auto_boost_step(pd_auto_boost_t *ab, const pd_auto_boost_input_t *in
     }
 
     return 0U;
+}
+
+void pd_safe_5v_init(pd_safe_5v_t *sf) {
+    if (sf == NULL) {
+        return;
+    }
+    sf->was_loaded = false;
+    sf->fault_handled = false;
+    sf->idle_ticks = 0U;
+}
+
+void pd_safe_5v_notify_manual_v(pd_safe_5v_t *sf) {
+    if (sf == NULL) {
+        return;
+    }
+    sf->was_loaded = false;
+    sf->idle_ticks = 0U;
+}
+
+pd_safe_drop_reason_t pd_safe_5v_step(pd_safe_5v_t *sf,
+                                      uint16_t active_mv,
+                                      uint32_t target_power_mw,
+                                      bool fault_active) {
+    if (sf == NULL) {
+        return PD_SAFE_DROP_NONE;
+    }
+
+    if (fault_active) {
+        sf->was_loaded = false;
+        sf->idle_ticks = 0U;
+        if (!sf->fault_handled) {
+            sf->fault_handled = true;
+            if (active_mv > 5000U) {
+                return PD_SAFE_DROP_FAULT;
+            }
+        }
+        return PD_SAFE_DROP_NONE;
+    }
+
+    sf->fault_handled = false;
+
+    if (target_power_mw > 0UL) {
+        sf->was_loaded = true;
+        sf->idle_ticks = 0U;
+        return PD_SAFE_DROP_NONE;
+    }
+
+    if (sf->was_loaded) {
+        if (active_mv <= 5000U) {
+            sf->was_loaded = false;
+            sf->idle_ticks = 0U;
+            return PD_SAFE_DROP_NONE;
+        }
+        if (sf->idle_ticks < UINT8_MAX) {
+            sf->idle_ticks++;
+        }
+        if (sf->idle_ticks >= PD_SAFE5V_IDLE_DELAY_TICKS) {
+            sf->was_loaded = false;
+            sf->idle_ticks = 0U;
+            return PD_SAFE_DROP_IDLE;
+        }
+    }
+
+    return PD_SAFE_DROP_NONE;
 }
 
 static void handle_comm_fault(pd_sink_fsm_t *fsm, pd_sink_output_t *out) {

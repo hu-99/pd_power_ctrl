@@ -188,11 +188,67 @@ static int test_pd_auto_boost_ignores_open_circuit_and_fault(void) {
     return 0;
 }
 
+static int test_pd_safe_5v_drops_on_idle_after_load_and_respects_manual_v(void) {
+    pd_safe_5v_t sf;
+    int i;
+
+    pd_safe_5v_init(&sf);
+
+    /* Never loaded yet: idle at 12V (manual bench test) must NOT be forced down. */
+    for (i = 0; i < 30; i++) {
+        TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 0UL, false));
+    }
+
+    /* Active load at 12V arms idle fallback. */
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 5000UL, false));
+
+    /* Load turned off (P=0): waits 9 ticks (450ms), drops on 10th tick (500ms). */
+    for (i = 0; i < 9; i++) {
+        TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 0UL, false));
+    }
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_IDLE, pd_safe_5v_step(&sf, 12000U, 0UL, false));
+
+    /* Once dropped, manual V 9000 while idle must stay at 9V. */
+    pd_safe_5v_notify_manual_v(&sf);
+    for (i = 0; i < 30; i++) {
+        TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 9000U, 0UL, false));
+    }
+
+    /* Manual V during the 500ms idle countdown cancels the drop. */
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 6000UL, false));
+    for (i = 0; i < 5; i++) {
+        TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 0UL, false));
+    }
+    pd_safe_5v_notify_manual_v(&sf);
+    for (i = 0; i < 20; i++) {
+        TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 0UL, false));
+    }
+    return 0;
+}
+
+static int test_pd_safe_5v_drops_immediately_on_fault_and_rearms(void) {
+    pd_safe_5v_t sf;
+
+    pd_safe_5v_init(&sf);
+
+    /* Fault while at 12V (even if never loaded) drops immediately, once. */
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_FAULT, pd_safe_5v_step(&sf, 12000U, 0UL, true));
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 12000U, 0UL, true));
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 5000U, 0UL, true));
+
+    /* Clear fault -> re-arm for future faults. */
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_NONE, pd_safe_5v_step(&sf, 5000U, 0UL, false));
+    TEST_ASSERT_EQ_INT(PD_SAFE_DROP_FAULT, pd_safe_5v_step(&sf, 20000U, 10000UL, true));
+    return 0;
+}
+
 int run_pd_sink_policy_tests(void) {
     RUN_TEST(test_pd_selects_highest_supported_below_target);
     RUN_TEST(test_pd_attach_negotiate_settle_and_switch);
     RUN_TEST(test_pd_comm_fault_falls_back_to_safe_5v);
     RUN_TEST(test_pd_auto_boost_steps_up_and_stops_at_max_pdo);
     RUN_TEST(test_pd_auto_boost_ignores_open_circuit_and_fault);
+    RUN_TEST(test_pd_safe_5v_drops_on_idle_after_load_and_respects_manual_v);
+    RUN_TEST(test_pd_safe_5v_drops_immediately_on_fault_and_rearms);
     return 0;
 }

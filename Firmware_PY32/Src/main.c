@@ -66,7 +66,9 @@ typedef struct {
     uint8_t sim_otp_ticks;
     bool clear_latch_req;
     bool auto_pd_enable;
+    bool manual_v_pending;
     uint16_t auto_boost_notice_mv;
+    uint8_t safe_5v_notice;
     bool husb_online;
     bool ina_online;
     bool pending_bb_valid;
@@ -220,6 +222,7 @@ static void handle_uart_cmd(const char *cmd) {
         if ((mv >= 5000U) && (mv <= 20000U)) {
             if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(10U)) == pdTRUE) {
                 s_shared.desired_pd_mv = (uint16_t)mv;
+                s_shared.manual_v_pending = true;
                 xSemaphoreGive(s_state_mutex);
             }
             bsp_uart_puts("[CMD] SET_PD=");
@@ -295,6 +298,7 @@ static void task_pd_entry(void *arg) {
     const i2c_bus_ops_t *bus = bsp_i2c1_bus();
     pd_sink_fsm_t pd_fsm;
     pd_auto_boost_t auto_boost;
+    pd_safe_5v_t safe_5v;
     pd_caps_t mock_caps = {0};
     TickType_t last_wake = xTaskGetTickCount();
 
@@ -310,6 +314,7 @@ static void task_pd_entry(void *arg) {
 
     pd_sink_init(&pd_fsm, 12000U);
     pd_auto_boost_init(&auto_boost);
+    pd_safe_5v_init(&safe_5v);
 
     for (;;) {
         uint16_t desired_mv = 12000U;
@@ -320,6 +325,7 @@ static void task_pd_entry(void *arg) {
         uint32_t meas_mw = 0U;
         uint8_t prot_fault = 0U;
         bool auto_pd_en = true;
+        bool manual_v = false;
         bool ina_online = false;
 
         if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) == pdTRUE) {
@@ -331,8 +337,15 @@ static void task_pd_entry(void *arg) {
             meas_mw = s_shared.meas_power_mw;
             prot_fault = s_shared.prot_fault;
             auto_pd_en = s_shared.auto_pd_enable;
+            manual_v = s_shared.manual_v_pending;
+            s_shared.manual_v_pending = false;
             ina_online = s_shared.ina_online;
             xSemaphoreGive(s_state_mutex);
+        }
+
+        if (manual_v) {
+            pd_safe_5v_notify_manual_v(&safe_5v);
+            pd_auto_boost_init(&auto_boost);
         }
 
         pd_caps_t hw_caps = {0};
@@ -376,25 +389,37 @@ static void task_pd_entry(void *arg) {
             pd_sink_step(&pd_fsm, &in, &out);
         }
 
+        /* vSafe5V fallback: drop to 5V immediately on latched fault, or 500ms after P=0 stop. */
+        pd_safe_drop_reason_t safe_drop;
+        uint16_t rail_mv = (out.active_mv > desired_mv) ? out.active_mv : desired_mv;
+        safe_drop = pd_safe_5v_step(&safe_5v, rail_mv, target_mw, (prot_fault != 0U));
+
         /* Auto step-up one supported PD voltage gear if current rail saturates below target power. */
         pd_auto_boost_input_t ab_in;
-        uint16_t boost_mv;
-        ab_in.enabled = auto_pd_en;
-        ab_in.power_ready = out.power_ready;
-        ab_in.fault_active = (prot_fault != 0U);
-        ab_in.current_mv = out.active_mv;
-        ab_in.ibus_ma = ibus_ma;
-        ab_in.duty_permille = duty_pm;
-        ab_in.target_power_mw = target_mw;
-        ab_in.meas_power_mw = meas_mw;
-        ab_in.caps = active_caps;
-        boost_mv = pd_auto_boost_step(&auto_boost, &ab_in);
+        uint16_t boost_mv = 0U;
+        if (safe_drop == PD_SAFE_DROP_NONE) {
+            ab_in.enabled = auto_pd_en;
+            ab_in.power_ready = out.power_ready;
+            ab_in.fault_active = (prot_fault != 0U);
+            ab_in.current_mv = out.active_mv;
+            ab_in.ibus_ma = ibus_ma;
+            ab_in.duty_permille = duty_pm;
+            ab_in.target_power_mw = target_mw;
+            ab_in.meas_power_mw = meas_mw;
+            ab_in.caps = active_caps;
+            boost_mv = pd_auto_boost_step(&auto_boost, &ab_in);
+        } else {
+            pd_auto_boost_init(&auto_boost);
+        }
 
         if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) == pdTRUE) {
             s_shared.husb_online = husb_ok;
             s_shared.pd_mv = out.active_mv;
             s_shared.pd_state = (uint8_t)out.state;
-            if ((boost_mv > 0U) && (s_shared.desired_pd_mv == desired_mv)) {
+            if ((safe_drop != PD_SAFE_DROP_NONE) && (s_shared.desired_pd_mv == desired_mv)) {
+                s_shared.desired_pd_mv = 5000U;
+                s_shared.safe_5v_notice = (uint8_t)safe_drop;
+            } else if ((boost_mv > 0U) && (s_shared.desired_pd_mv == desired_mv)) {
                 s_shared.desired_pd_mv = boost_mv;
                 s_shared.auto_boost_notice_mv = boost_mv;
             }
@@ -627,6 +652,7 @@ static void task_log_entry(void *arg) {
             bbox_record_t pending;
             bool has_pending = false;
             uint16_t boost_mv = 0U;
+            uint8_t safe_5v_evt = 0U;
 
             if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) == pdTRUE) {
                 if (s_shared.pending_bb_valid) {
@@ -638,6 +664,10 @@ static void task_log_entry(void *arg) {
                     boost_mv = s_shared.auto_boost_notice_mv;
                     s_shared.auto_boost_notice_mv = 0U;
                 }
+                if (s_shared.safe_5v_notice != 0U) {
+                    safe_5v_evt = s_shared.safe_5v_notice;
+                    s_shared.safe_5v_notice = 0U;
+                }
                 xSemaphoreGive(s_state_mutex);
             }
 
@@ -645,6 +675,11 @@ static void task_log_entry(void *arg) {
                 bsp_uart_puts("[AUTO-PD] BOOST -> ");
                 bsp_uart_put_u32(boost_mv);
                 bsp_uart_puts("mV\r\n");
+            }
+            if (safe_5v_evt == (uint8_t)PD_SAFE_DROP_IDLE) {
+                bsp_uart_puts("[SAFE-PD] IDLE -> 5000mV (vSafe5V)\r\n");
+            } else if (safe_5v_evt == (uint8_t)PD_SAFE_DROP_FAULT) {
+                bsp_uart_puts("[SAFE-PD] FAULT -> 5000mV (vSafe5V)\r\n");
             }
 
             if (has_pending) {
