@@ -40,6 +40,13 @@
 
 ![Auto-PD 与 vSafe5V 真机实测波形](doc/assets/bench_autopd_vsafe5v_waveform.png)
 
+### 赛博机甲 HUD 原图与 `BC1/DXT1` 4:1 软解叠字预览
+
+| 赛博机甲像素 HUD 原图（`Tools/assets/cyber_mech_hud_src.jpg`） | `6.25KB` BC1 软解还原与 `LIVE / FLT` 实时叠字三态 |
+| :---: | :---: |
+| <img src="Tools/assets/cyber_mech_hud_src.jpg" alt="赛博机甲像素 HUD 背景原图" width="520"/> | <img src="doc/assets/cyber_mech_live_sim.png" alt="BC1 4:1 软解底图与透明叠字三态仿真" width="200"/> |
+| 专为 `160×80` 横屏定制：黄黑警戒斜纹 + 青/粉霓虹边角 + 暗黑电路纹路 | `25.0KB → 6.25KB`（`PSNR 34.66 dB`），`1,280B` 单条带流式叠字 |
+
 ---
 
 ## 核心实测指标一览
@@ -120,7 +127,7 @@ flowchart LR
 ## 5 大核心工程亮点
 
 1. **极限资源下的全静态 RTOS + 双通道 DMA**：在 `8KB SRAM` 上零 `malloc` 运行 FreeRTOS 三任务；`DMA1_CH1` 零 CPU 开销持续采样内部温度与 `VREFINT`（实时校正 `VDDA` 并驱动 `70~85°C` 线性过温降功率），`DMA1_CH2` 异步推送 `12MHz SPI1` 彩屏像素，完全不阻塞 `20ms` 功率闭环。
-2. **软硬解耦 + PC 宿主机门禁测试**：纯 C99 业务层（`Logic_PureC/`）与外设驱动层（`ExtDev/`）通过 `i2c_bus_ops_t` / Flash 回调完全解耦，脱离 MCU 即可在 PC 端用 MinGW GCC (`-Wall -Wextra -Werror`) 跑通 `23/23` 单元与故障注入测试。
+2. **软硬解耦 + PC 宿主机门禁测试**：纯 C99 业务层（`Logic_PureC/`）与外设驱动层（`ExtDev/`）通过 `i2c_bus_ops_t` / Flash 回调完全解耦，脱离 MCU 即可在 PC 端用 MinGW GCC (`-Wall -Wextra -Werror`) 跑通 `25/25` 单元与故障注入测试。
 3. **`Auto-PD` 饱和升压 + `vSafe5V` 安全回落闭环**：带载占空比顶满（`>=940pm`）且欠功率持续 `1.0s` 时自动逐级升档（`5V→9V→12V→15V→20V`，内置 `I>=20mA` 空载防误升与 `1.5s` 冷却）；带载停机 (`P 0`) 等 `500ms` 电流归零后自动退回 **`5V (vSafe5V)`**、故障锁存立即降回 `5V`（同时兼容停载后手动 `V` 空载测充电头），已实板跑通 `5V→9V→12V (20W)→5V` 全流程。
 4. **协作看门狗 + 防掉电撕裂双页黑匣子**：三任务心跳位图汇总由最低优先级任务喂 `IWDG`；末两页 `0x0800FF00/FF80` Flash（单调 `seq + IEEE CRC32` 双页乒乓，正常开机零磨损）配合 `NOINIT` 遗言区，真机实测 `UVP / OVP / OCP_S / OTP / IWDG` 全路径可追溯。
 5. **8KB 内存无除法 `BC1` 4:1 彩屏子系统**：自研 Python PCA+最小二乘编码器 (`Tools/img2bc1.py`) 与 M0+ 无除法软解器，仅用 `1,280B` 单条带缓冲实现 `O(1)` 局部背景解码 + 透明叠字刷新。
@@ -162,7 +169,7 @@ pd_power_ctrl/
 ├── Logic_PureC/    # 零硬件依赖纯 C99 核心：PD 策略机/Auto-PD、定点 PID、保护状态机、双页黑匣子、BC1 软解
 ├── ExtDev/         # 依赖注入外设驱动：HUSB238、INA219/INA226 自动识别
 ├── Firmware_PY32/  # PY32F003F18P6 Keil MDK 工程（静态 FreeRTOS + PY32 LL + ST7735S HUD + bg_cyber_mech.h）
-├── Tests_Host/     # PC 宿主机 MinGW GCC 单元测试（23/23 全绿）
+├── Tests_Host/     # PC 宿主机 MinGW GCC 单元测试（25/25 全绿）
 ├── Tools/          # img2bc1.py 离线 BC1 压图编码器 + 赛博 HUD 原图素材
 └── doc/            # 完整图文文档与真机实测证据图集
 ```
