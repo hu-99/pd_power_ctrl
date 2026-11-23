@@ -1,0 +1,35 @@
+# Host test / scratch build outputs
+build/
+__pycache__/
+*.pyc
+*.exe
+
+# Keil MDK build artifacts and per-user IDE state
+Firmware_PY32/MDK-ARM/Objects/
+Firmware_PY32/MDK-ARM/Listings/
+Firmware_PY32/MDK-ARM/DebugConfig/
+Firmware_PY32/MDK-ARM/RTE/
+Firmware_PY32/MDK-ARM/build_keil.log
+*.o
+*.obj
+*.d
+*.crf
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.dep
+*.lnp
+*.htm
+*.Bak
+*.uvoptx
+*.uvguix.*
+
+# Local vendor archives / unpacked third-party TFT sample packs (kept locally only)
+doc/0.96寸TFT -1/
+doc/*.rar
+doc/*.zip
+
+# Personal local notes (keep on local disk only, do not publish to remote)
+doc/03_*.md
