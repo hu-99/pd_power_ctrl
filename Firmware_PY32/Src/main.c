@@ -195,7 +195,7 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     __disable_irq();
     if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
         TIM1->CCR3 = 0U;
-        TIM1->BDTR &= ~TIM_BDTR_MOE;
+        TIM1->BDTR = (TIM1->BDTR & ~TIM_BDTR_MOE) | TIM_BDTR_OSSI;
     }
     bsp_crumb_update((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
                      0U, 0U, 0U, (uint8_t)s_wdg_alive_mask, 0x80U);
@@ -208,7 +208,7 @@ void APP_ErrorHandler(void) {
     __disable_irq();
     if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
         TIM1->CCR3 = 0U;
-        TIM1->BDTR &= ~TIM_BDTR_MOE;
+        TIM1->BDTR = (TIM1->BDTR & ~TIM_BDTR_MOE) | TIM_BDTR_OSSI;
     }
     while (1) {
     }

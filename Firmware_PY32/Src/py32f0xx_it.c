@@ -1,22 +1,21 @@
 #include "bsp_board.h"
-#include "bsp_board.h"
 #include "main.h"
 #include "py32f0xx_it.h"
 
 void NMI_Handler(void) {
-    /* Direct register write avoids function calls if SP/stack is compromised. */
+    /* Direct register write avoids function calls; OSSI=1 + MOE=0 drives PA0 actively LOW. */
     if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
         TIM1->CCR3 = 0U;
-        TIM1->BDTR &= ~TIM_BDTR_MOE;
+        TIM1->BDTR = (TIM1->BDTR & ~TIM_BDTR_MOE) | TIM_BDTR_OSSI;
     }
 }
 
 void HardFault_Handler(void) {
     __disable_irq();
-    /* Direct register cutoff avoids stack push so stacked corruption cannot lock up core. */
+    /* Direct register cutoff avoids stack push; OSSI=1 + MOE=0 drives PA0 actively LOW instead of Hi-Z. */
     if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
         TIM1->CCR3 = 0U;
-        TIM1->BDTR &= ~TIM_BDTR_MOE;
+        TIM1->BDTR = (TIM1->BDTR & ~TIM_BDTR_MOE) | TIM_BDTR_OSSI;
     }
     while (1) {
     }

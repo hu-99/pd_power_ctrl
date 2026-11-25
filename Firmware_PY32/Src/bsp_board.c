@@ -116,8 +116,8 @@ static void tim1_ch3_pa0_pwm_init(void) {
     gpio.Mode = LL_GPIO_MODE_ALTERNATE;
     gpio.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
     gpio.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-    /* External 10k pull-down on MOSFET TRIG/PWM provides reset/Hi-Z safety; internal pull on push-pull is unused. */
-    gpio.Pull = LL_GPIO_PULL_NO;
+    /* Internal pull-down backs up non-reset Hi-Z cases; external 10k pull-down covers hardware reset. */
+    gpio.Pull = LL_GPIO_PULL_DOWN;
     gpio.Alternate = LL_GPIO_AF13_TIM1;
     LL_GPIO_Init(GPIOA, &gpio);
 
@@ -137,6 +137,8 @@ static void tim1_ch3_pa0_pwm_init(void) {
     LL_TIM_OC_Init(TIM1, LL_TIM_CHANNEL_CH3, &oc);
     LL_TIM_OC_EnablePreload(TIM1, LL_TIM_CHANNEL_CH3);
 
+    /* OSSI=1 forces TIM1_CH3 to OCIdleState (LOW) instead of Hi-Z whenever MOE=0. */
+    LL_TIM_SetOffStates(TIM1, LL_TIM_OSSI_ENABLE, LL_TIM_OSSR_ENABLE);
     LL_TIM_EnableAllOutputs(TIM1);
     LL_TIM_EnableCounter(TIM1);
 }
@@ -768,14 +770,20 @@ void bsp_pwm_set_duty_permille(uint16_t duty_permille) {
     uint32_t clamped;
     uint32_t ccr;
 
-    /* Check ISR latch + write CCR3 atomically so EXTI4 trip cannot be overwritten by task context. */
+    /* Check ISR latch + write CCR3/BDTR atomically so EXTI4 trip cannot be overwritten by task context. */
     __disable_irq();
     if (s_alert_irq_latched) {
-        duty_permille = 0U;
+        TIM1->CCR3 = 0U;
+        TIM1->BDTR = (TIM1->BDTR & ~TIM_BDTR_MOE) | TIM_BDTR_OSSI;
+        __set_PRIMASK(primask);
+        return;
     }
     clamped = (duty_permille > 1000U) ? 1000U : duty_permille;
     ccr = (clamped * BSP_PWM_PERIOD) / 1000U;
     LL_TIM_OC_SetCompareCH3(TIM1, ccr);
+    if ((TIM1->BDTR & TIM_BDTR_MOE) == 0U) {
+        TIM1->BDTR |= TIM_BDTR_MOE | TIM_BDTR_OSSI;
+    }
     __set_PRIMASK(primask);
 }
 
@@ -796,7 +804,9 @@ void bsp_alert_exti_set_enabled(bool enable) {
 
 void bsp_alert_exti_isr(void) {
     if (s_alert_exti_enabled && (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U)) {
+        /* Bypass CCR3 preload delay and actively drive PA0 LOW via OSSI=1, MOE=0. */
         TIM1->CCR3 = 0U;
+        TIM1->BDTR = (TIM1->BDTR & ~TIM_BDTR_MOE) | TIM_BDTR_OSSI;
         s_alert_irq_latched = true;
     }
 }
