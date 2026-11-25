@@ -103,7 +103,24 @@ void bsp_led_toggle(void);
 void bsp_pwm_set_duty_permille(uint16_t duty_permille);
 
 /**
- * @brief Return true when INA226 ALE pin (PA4, active-low) is asserted.
+ * @brief Enable or disable PA4 EXTI4 falling-edge hardware alert latch (enabled on INA226,
+ *        disabled on INA219 where PA4 is floating).
+ */
+void bsp_alert_exti_set_enabled(bool enable);
+
+/**
+ * @brief ISR callback for EXTI4_15_IRQHandler: immediately sets TIM1_CH3 PWM duty to 0
+ *        and latches the hardware alert event.
+ */
+void bsp_alert_exti_isr(void);
+
+/**
+ * @brief Clear the ISR-latched hardware alert flag after fault recovery.
+ */
+void bsp_alert_clear_latch(void);
+
+/**
+ * @brief Return true when INA226 ALE pin (PA4, active-low) is asserted or ISR latch is set.
  */
 bool bsp_alert_is_active(void);
 

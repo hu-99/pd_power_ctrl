@@ -312,6 +312,8 @@ static void draw_header_zone(bool live_mode, uint8_t pd_v, uint8_t fault) {
             tag = "FLT:ALE";
         } else if (fault == (uint8_t)PROT_FAULT_OTP) {
             tag = "FLT:OTP";
+        } else if (fault == (uint8_t)PROT_FAULT_SENSOR_LOSS) {
+            tag = "FLT:SNS";
         }
         (void)strip_draw_text5x7(rx, ry, rw, rh, 18U, 15U, tag, COL_RED_BE, 1U, 1U);
         (void)strip_draw_text5x7(rx, ry, rw, rh, 66U, 15U, "LOCK", COL_AMBER_BE, 1U, 1U);

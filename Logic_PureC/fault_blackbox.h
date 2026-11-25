@@ -16,7 +16,8 @@ typedef enum {
     BBOX_EVT_OCP_HARD = 4,
     BBOX_EVT_IWDG_RESET = 5,
     BBOX_EVT_STACK_OVERFLOW = 6,
-    BBOX_EVT_OTP = 7
+    BBOX_EVT_OTP = 7,
+    BBOX_EVT_SENSOR_LOSS = 8
 } bbox_event_t;
 
 #define BBOX_FLAG_INA_ONLINE   (1U << 0)

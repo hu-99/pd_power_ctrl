@@ -41,7 +41,22 @@ void prot_init(prot_fsm_t *fsm, const prot_cfg_t *cfg) {
     fsm->ovp_cnt = 0U;
     fsm->ocp_cnt = 0U;
     fsm->otp_cnt = 0U;
+    fsm->sensor_ever_online = false;
     fsm->output_allowed = true;
+}
+
+bool prot_step_sensor(prot_fsm_t *fsm, bool sensor_online) {
+    if (fsm == NULL) {
+        return false;
+    }
+    if (sensor_online) {
+        fsm->sensor_ever_online = true;
+    } else if (fsm->sensor_ever_online && (fsm->latched_fault == PROT_FAULT_NONE)) {
+        fsm->latched_fault = PROT_FAULT_SENSOR_LOSS;
+        fsm->output_allowed = false;
+        return false;
+    }
+    return (fsm->latched_fault == PROT_FAULT_NONE);
 }
 
 bool prot_step(prot_fsm_t *fsm,

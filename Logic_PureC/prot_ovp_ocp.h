@@ -10,7 +10,8 @@ typedef enum {
     PROT_FAULT_OVP,
     PROT_FAULT_OCP_SOFT,
     PROT_FAULT_OCP_HARD,
-    PROT_FAULT_OTP
+    PROT_FAULT_OTP,
+    PROT_FAULT_SENSOR_LOSS
 } prot_fault_t;
 
 typedef struct {
@@ -36,6 +37,7 @@ typedef struct {
     uint8_t ovp_cnt;
     uint8_t ocp_cnt;
     uint8_t otp_cnt;
+    bool sensor_ever_online;
     bool output_allowed;
 } prot_fsm_t;
 
@@ -43,6 +45,13 @@ typedef struct {
  * @brief Initialize protection supervisor with safe thresholds and cleared latches.
  */
 void prot_init(prot_fsm_t *fsm, const prot_cfg_t *cfg);
+
+/**
+ * @brief Monitor power-sensor I2C link health; latches PROT_FAULT_SENSOR_LOSS (duty=0)
+ *        immediately if the sensor was previously online and drops offline.
+ * @return true if sensor link is healthy (or has never been attached yet).
+ */
+bool prot_step_sensor(prot_fsm_t *fsm, bool sensor_online);
 
 /**
  * @brief Update electrical protection state (UVP/OVP/OCP/HW_ALERT) for one sample tick.

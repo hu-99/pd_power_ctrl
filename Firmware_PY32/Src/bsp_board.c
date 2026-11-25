@@ -10,6 +10,8 @@
 
 static uint8_t s_reset_cause_mask;
 static volatile uint32_t s_adc_dma_buf[BSP_ADC_DMA_LEN];
+static volatile bool s_alert_exti_enabled;
+static volatile bool s_alert_irq_latched;
 
 static volatile uint8_t s_rx_ring[UART_RX_RING_SIZE];
 static volatile uint8_t s_rx_head;
@@ -49,12 +51,26 @@ static void led_pb5_init(void) {
 
 static void alert_pa4_init(void) {
     LL_GPIO_InitTypeDef gpio = {0};
+    LL_EXTI_InitTypeDef exti = {0};
 
     LL_IOP_GRP1_EnableClock(LL_IOP_GRP1_PERIPH_GPIOA);
     gpio.Pin = LL_GPIO_PIN_4;
     gpio.Mode = LL_GPIO_MODE_INPUT;
     gpio.Pull = LL_GPIO_PULL_UP;
     LL_GPIO_Init(GPIOA, &gpio);
+
+    /* Route PA4 -> EXTI4 falling-edge IRQ for microsecond PWM cutoff when INA226 ALE asserts. */
+    LL_EXTI_SetEXTISource(LL_EXTI_CONFIG_PORTA, LL_EXTI_CONFIG_LINE4);
+    exti.Line = LL_EXTI_LINE_4;
+    exti.LineCommand = ENABLE;
+    exti.Mode = LL_EXTI_MODE_IT;
+    exti.Trigger = LL_EXTI_TRIGGER_FALLING;
+    LL_EXTI_Init(&exti);
+    LL_EXTI_DisableIT(LL_EXTI_LINE_4);
+    LL_EXTI_ClearFlag(LL_EXTI_LINE_4);
+
+    NVIC_SetPriority(EXTI4_15_IRQn, 0U);
+    NVIC_EnableIRQ(EXTI4_15_IRQn);
 }
 
 static void usart2_pa2_pa3_init(void) {
@@ -752,8 +768,34 @@ void bsp_pwm_set_duty_permille(uint16_t duty_permille) {
     LL_TIM_OC_SetCompareCH3(TIM1, ccr);
 }
 
+void bsp_alert_exti_set_enabled(bool enable) {
+    s_alert_exti_enabled = enable;
+    if (enable) {
+        LL_EXTI_ClearFlag(LL_EXTI_LINE_4);
+        LL_EXTI_EnableIT(LL_EXTI_LINE_4);
+    } else {
+        LL_EXTI_DisableIT(LL_EXTI_LINE_4);
+        LL_EXTI_ClearFlag(LL_EXTI_LINE_4);
+        s_alert_irq_latched = false;
+    }
+}
+
+void bsp_alert_exti_isr(void) {
+    if (s_alert_exti_enabled && (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U)) {
+        LL_TIM_OC_SetCompareCH3(TIM1, 0U);
+        s_alert_irq_latched = true;
+    }
+}
+
+void bsp_alert_clear_latch(void) {
+    s_alert_irq_latched = false;
+}
+
 bool bsp_alert_is_active(void) {
-    return (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U);
+    if (!s_alert_exti_enabled) {
+        return false;
+    }
+    return s_alert_irq_latched || (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U);
 }
 
 const i2c_bus_ops_t *bsp_i2c1_bus(void) {

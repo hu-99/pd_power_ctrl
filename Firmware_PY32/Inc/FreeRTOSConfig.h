@@ -40,9 +40,9 @@
 #define configUSE_TRACE_FACILITY                0
 #define configUSE_STATS_FORMATTING_FUNCTIONS    0
 
-/* Cortex-M0+ NVIC uses top 2 bits (4 priority levels: 0..3). */
+/* Cortex-M0+ NVIC uses top 2 bits (4 priority levels: 0..3).
+ * Note: ARMv6-M (Cortex-M0+) masks interrupts globally via PRIMASK in critical sections. */
 #define configKERNEL_INTERRUPT_PRIORITY         (3U << 6U)
-#define configMAX_SYSCALL_INTERRUPT_PRIORITY    (1U << 6U)
 
 #define INCLUDE_vTaskPrioritySet                0
 #define INCLUDE_uxTaskPriorityGet               0
@@ -58,6 +58,7 @@
 #define xPortPendSVHandler                      PendSV_Handler
 #define xPortSysTickHandler                     SysTick_Handler
 
-#define configASSERT(x)                         do { if ((x) == 0) { __disable_irq(); for (;;) {} } } while (0)
+void APP_ErrorHandler(void);
+#define configASSERT(x)                         do { if ((x) == 0) { APP_ErrorHandler(); } } while (0)
 
 #endif /* FREERTOS_CONFIG_H */

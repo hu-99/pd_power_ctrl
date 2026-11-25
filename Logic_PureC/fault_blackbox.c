@@ -200,6 +200,8 @@ const char *bbox_event_name(uint8_t event_type) {
         return "STK";
     case BBOX_EVT_OTP:
         return "OTP";
+    case BBOX_EVT_SENSOR_LOSS:
+        return "SNS";
     default:
         return "NONE";
     }

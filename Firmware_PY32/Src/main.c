@@ -12,9 +12,15 @@
 #include "tft_hud.h"
 #include <string.h>
 
-#define APP_SHUNT_MOHM       100U   /* R100 (0.1 ohm) on INA226 module */
+#define APP_SHUNT_MOHM       100U   /* R100 (0.1 ohm) on INA219/INA226 module */
 #define APP_HW_ALERT_OCP_MA  780U   /* Hardware ALE limit inside 819mA range */
 #define APP_SIM_LOAD_OHM     35U    /* 10+10+15 ohm golden resistor series */
+
+/* Set to 1 ONLY for offline desk simulation without INA219/INA226 attached;
+ * default 0 keeps PA0 PWM forced to 0% whenever the sensor is absent/disconnected. */
+#ifndef APP_ALLOW_SIM_PWM_OUTPUT
+#define APP_ALLOW_SIM_PWM_OUTPUT 0
+#endif
 
 #define CTRL_TASK_STACK_WORDS 160U
 #define PD_TASK_STACK_WORDS   160U
@@ -103,6 +109,8 @@ static uint8_t prot_fault_to_bbox_evt(prot_fault_t fault) {
         return (uint8_t)BBOX_EVT_OCP_HARD;
     case PROT_FAULT_OTP:
         return (uint8_t)BBOX_EVT_OTP;
+    case PROT_FAULT_SENSOR_LOSS:
+        return (uint8_t)BBOX_EVT_SENSOR_LOSS;
     default:
         return (uint8_t)BBOX_EVT_NONE;
     }
@@ -328,20 +336,23 @@ static void task_pd_entry(void *arg) {
         bool manual_v = false;
         bool ina_online = false;
 
-        if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) == pdTRUE) {
-            desired_mv = s_shared.desired_pd_mv;
-            live_vbus_mv = s_shared.vbus_mv;
-            ibus_ma = s_shared.ibus_ma;
-            duty_pm = s_shared.pid_duty_permille;
-            target_mw = s_shared.target_power_mw;
-            meas_mw = s_shared.meas_power_mw;
-            prot_fault = s_shared.prot_fault;
-            auto_pd_en = s_shared.auto_pd_enable;
-            manual_v = s_shared.manual_v_pending;
-            s_shared.manual_v_pending = false;
-            ina_online = s_shared.ina_online;
-            xSemaphoreGive(s_state_mutex);
+        if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) != pdTRUE) {
+            (void)wdg_mark_alive(WDG_BIT_PD);
+            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(50U));
+            continue;
         }
+        desired_mv = s_shared.desired_pd_mv;
+        live_vbus_mv = s_shared.vbus_mv;
+        ibus_ma = s_shared.ibus_ma;
+        duty_pm = s_shared.pid_duty_permille;
+        target_mw = s_shared.target_power_mw;
+        meas_mw = s_shared.meas_power_mw;
+        prot_fault = s_shared.prot_fault;
+        auto_pd_en = s_shared.auto_pd_enable;
+        manual_v = s_shared.manual_v_pending;
+        s_shared.manual_v_pending = false;
+        ina_online = s_shared.ina_online;
+        xSemaphoreGive(s_state_mutex);
 
         if (manual_v) {
             pd_safe_5v_notify_manual_v(&safe_5v);
@@ -474,22 +485,27 @@ static void task_ctrl_entry(void *arg) {
         uint8_t sim_otp_ticks = 0U;
         bool clear_req = false;
 
-        if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) == pdTRUE) {
-            target_mw = s_shared.target_power_mw;
-            pd_mv = s_shared.pd_mv;
-            husb_online = s_shared.husb_online;
-            clear_req = s_shared.clear_latch_req;
-            s_shared.clear_latch_req = false;
-            if (s_shared.sim_ovp_ticks > 0U) {
-                sim_ovp_ticks = s_shared.sim_ovp_ticks;
-                s_shared.sim_ovp_ticks--;
-            }
-            if (s_shared.sim_otp_ticks > 0U) {
-                sim_otp_ticks = s_shared.sim_otp_ticks;
-                s_shared.sim_otp_ticks--;
-            }
-            xSemaphoreGive(s_state_mutex);
+        if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) != pdTRUE) {
+            /* Fail-safe: never compute PID or protection from uninitialized defaults. */
+            bsp_pwm_set_duty_permille(0U);
+            (void)wdg_mark_alive(WDG_BIT_CTRL);
+            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(20U));
+            continue;
         }
+        target_mw = s_shared.target_power_mw;
+        pd_mv = s_shared.pd_mv;
+        husb_online = s_shared.husb_online;
+        clear_req = s_shared.clear_latch_req;
+        s_shared.clear_latch_req = false;
+        if (s_shared.sim_ovp_ticks > 0U) {
+            sim_ovp_ticks = s_shared.sim_ovp_ticks;
+            s_shared.sim_ovp_ticks--;
+        }
+        if (s_shared.sim_otp_ticks > 0U) {
+            sim_otp_ticks = s_shared.sim_otp_ticks;
+            s_shared.sim_otp_ticks--;
+        }
+        xSemaphoreGive(s_state_mutex);
 
         ina226_sample_t sample;
         memset(&sample, 0, sizeof(sample));
@@ -505,6 +521,7 @@ static void task_ctrl_entry(void *arg) {
                     ina_configured = false;
                 } else if (clear_req) {
                     (void)ina226_clear_alert(bus);
+                    bsp_alert_clear_latch();
                 }
             }
             xSemaphoreGive(s_i2c_mutex);
@@ -520,19 +537,22 @@ static void task_ctrl_entry(void *arg) {
             ibus_ma = sample.ibus_ma;
             meas_mw = sample.power_mw;
             if (ina226_detected_chip() == INA_CHIP_219) {
-                /* INA219 (+-320mV / R100 = 3.2A full-scale) supports high-power loads safely. */
+                /* INA219 (+-320mV / R100 = 3.2A full-scale) has no ALERT pin. */
+                bsp_alert_exti_set_enabled(false);
                 prot.cfg.ocp_soft_ma = 2000U;
                 prot.cfg.ocp_hard_ma = 2500U;
                 hw_alert = false;
             } else {
+                bsp_alert_exti_set_enabled(true);
                 prot.cfg.ocp_soft_ma = prot_cfg.ocp_soft_ma;
                 prot.cfg.ocp_hard_ma = prot_cfg.ocp_hard_ma;
                 hw_alert = bsp_alert_is_active();
             }
         } else {
+            bsp_alert_exti_set_enabled(false);
             prot.cfg.ocp_soft_ma = prot_cfg.ocp_soft_ma;
             prot.cfg.ocp_hard_ma = prot_cfg.ocp_hard_ma;
-            /* Safe simulation until INA226 is wired onto PB6/PB7. */
+            /* Safe simulation model (PA0 physical PWM output is gated unless APP_ALLOW_SIM_PWM_OUTPUT=1). */
             vbus_mv = (pd_mv >= 5000U) ? pd_mv : 12000U;
             if (sim_ovp_ticks > 0U) {
                 vbus_mv = 22000U;
@@ -548,12 +568,13 @@ static void task_ctrl_entry(void *arg) {
             mcu_temp_c = 90;
         }
 
-        if (clear_req) {
+        if (clear_req && (ina_ok || !prot.sensor_ever_online)) {
             (void)prot_clear_latch_with_temp(&prot, vbus_mv, ibus_ma, hw_alert, mcu_temp_c);
         }
 
         prot_fault_t prev_fault = prot.latched_fault;
-        bool allow = prot_step(&prot, vbus_mv, ibus_ma, hw_alert);
+        bool allow = prot_step_sensor(&prot, ina_ok);
+        allow = prot_step(&prot, vbus_mv, ibus_ma, hw_alert) && allow;
         allow = prot_step_thermal(&prot, mcu_temp_c) && allow;
         uint16_t duty = 0U;
 
@@ -568,6 +589,10 @@ static void task_ctrl_entry(void *arg) {
                                      ((uint64_t)APP_SIM_LOAD_OHM * 1000UL);
                 sim_meas_mw = (uint32_t)((p_full_mw * duty) / 1000UL);
                 meas_mw = sim_meas_mw;
+#if !APP_ALLOW_SIM_PWM_OUTPUT
+                /* Never drive the physical MOSFET gate without a verified live current sensor. */
+                duty = 0U;
+#endif
             }
         } else {
             power_pid_reset(&pid);
@@ -593,6 +618,7 @@ static void task_ctrl_entry(void *arg) {
             s_shared.vdda_mv = vdda_mv;
             s_shared.mcu_temp_c = mcu_temp_c;
             s_shared.prot_fault = (uint8_t)prot.latched_fault;
+            bool notify_bbox = false;
             if ((prev_fault == PROT_FAULT_NONE) &&
                 (prot.latched_fault != PROT_FAULT_NONE) &&
                 (!s_shared.pending_bb_valid)) {
@@ -608,8 +634,12 @@ static void task_ctrl_entry(void *arg) {
                 s_shared.pending_bb_rec.flags = flags;
                 s_shared.pending_bb_rec.extra = (uint16_t)prot.latched_fault;
                 s_shared.pending_bb_valid = true;
+                notify_bbox = true;
             }
             xSemaphoreGive(s_state_mutex);
+            if (notify_bbox && (s_log_handle != NULL)) {
+                (void)xTaskNotifyGive(s_log_handle);
+            }
         }
 
         last_duty = duty;
@@ -705,66 +735,74 @@ static void task_log_entry(void *arg) {
             app_shared_t hsnap;
             tft_hud_state_t hud;
             hud_div = 0U;
+            bool has_snap = false;
             memset(&hsnap, 0, sizeof(hsnap));
             if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(5U)) == pdTRUE) {
                 hsnap = s_shared;
+                has_snap = true;
                 xSemaphoreGive(s_state_mutex);
             }
-            hud.live_mode = hsnap.ina_online;
-            hud.pd_target_mv = (hsnap.pd_mv > 0U) ? hsnap.pd_mv : hsnap.desired_pd_mv;
-            hud.vbus_mv = hsnap.vbus_mv;
-            hud.ibus_ma = hsnap.ibus_ma;
-            hud.power_mw = hsnap.meas_power_mw;
-            hud.duty_permille = hsnap.pid_duty_permille;
-            hud.mcu_temp_c = hsnap.mcu_temp_c;
-            hud.prot_fault = hsnap.prot_fault;
-            tft_hud_update(&hud);
+            if (has_snap) {
+                hud.live_mode = hsnap.ina_online;
+                hud.pd_target_mv = (hsnap.pd_mv > 0U) ? hsnap.pd_mv : hsnap.desired_pd_mv;
+                hud.vbus_mv = hsnap.vbus_mv;
+                hud.ibus_ma = hsnap.ibus_ma;
+                hud.power_mw = hsnap.meas_power_mw;
+                hud.duty_permille = hsnap.pid_duty_permille;
+                hud.mcu_temp_c = hsnap.mcu_temp_c;
+                hud.prot_fault = hsnap.prot_fault;
+                tft_hud_update(&hud);
+            }
         }
 
         tick_div++;
         if (tick_div >= 10U) { /* 50ms * 10 = 500ms telemetry heartbeat */
             app_shared_t snap;
+            bool has_snap = false;
             tick_div = 0U;
             bsp_led_toggle();
 
             memset(&snap, 0, sizeof(snap));
             if (xSemaphoreTake(s_state_mutex, pdMS_TO_TICKS(10U)) == pdTRUE) {
                 snap = s_shared;
+                has_snap = true;
                 xSemaphoreGive(s_state_mutex);
             }
 
-            if (!snap.ina_online) {
-                bsp_uart_puts("[SIM]  ");
-            } else if (ina226_detected_chip() == INA_CHIP_219) {
-                bsp_uart_puts("[LIVE-219] ");
-            } else {
-                bsp_uart_puts("[LIVE-226] ");
+            if (has_snap) {
+                if (!snap.ina_online) {
+                    bsp_uart_puts("[SIM]  ");
+                } else if (ina226_detected_chip() == INA_CHIP_219) {
+                    bsp_uart_puts("[LIVE-219] ");
+                } else {
+                    bsp_uart_puts("[LIVE-226] ");
+                }
+                bsp_uart_puts("HUSB=");
+                bsp_uart_put_u32(snap.husb_online ? 1U : 0U);
+                bsp_uart_puts(" VBUS=");
+                bsp_uart_put_u32(snap.vbus_mv);
+                bsp_uart_puts("mV I=");
+                bsp_uart_put_u32(snap.ibus_ma);
+                bsp_uart_puts("mA P=");
+                bsp_uart_put_u32(snap.meas_power_mw);
+                bsp_uart_puts("/");
+                bsp_uart_put_u32(snap.target_power_mw);
+                bsp_uart_puts("mW DUTY=");
+                bsp_uart_put_u32(snap.pid_duty_permille);
+                bsp_uart_puts("pm T=");
+                bsp_uart_put_i32((int32_t)snap.mcu_temp_c);
+                bsp_uart_puts("C VDDA=");
+                bsp_uart_put_u32(snap.vdda_mv);
+                bsp_uart_puts("mV FLT=");
+                bsp_uart_put_u32(snap.prot_fault);
+                bsp_uart_puts(" | HWM=");
+                bsp_uart_put_u32((uint32_t)uxTaskGetStackHighWaterMark(s_ctrl_handle));
+                bsp_uart_puts("/");
+                bsp_uart_put_u32((uint32_t)uxTaskGetStackHighWaterMark(s_pd_handle));
+                bsp_uart_puts("/");
+                bsp_uart_put_u32((uint32_t)uxTaskGetStackHighWaterMark(s_log_handle));
+                bsp_uart_puts("\r\n");
             }
-            bsp_uart_puts("HUSB=");
-            bsp_uart_put_u32(snap.husb_online ? 1U : 0U);
-            bsp_uart_puts(" VBUS=");
-            bsp_uart_put_u32(snap.vbus_mv);
-            bsp_uart_puts("mV I=");
-            bsp_uart_put_u32(snap.ibus_ma);
-            bsp_uart_puts("mA P=");
-            bsp_uart_put_u32(snap.meas_power_mw);
-            bsp_uart_puts("/");
-            bsp_uart_put_u32(snap.target_power_mw);
-            bsp_uart_puts("mW DUTY=");
-            bsp_uart_put_u32(snap.pid_duty_permille);
-            bsp_uart_puts("pm T=");
-            bsp_uart_put_i32((int32_t)snap.mcu_temp_c);
-            bsp_uart_puts("C VDDA=");
-            bsp_uart_put_u32(snap.vdda_mv);
-            bsp_uart_puts("mV FLT=");
-            bsp_uart_put_u32(snap.prot_fault);
-            bsp_uart_puts(" | HWM=");
-            bsp_uart_put_u32((uint32_t)uxTaskGetStackHighWaterMark(s_ctrl_handle));
-            bsp_uart_puts("/");
-            bsp_uart_put_u32((uint32_t)uxTaskGetStackHighWaterMark(s_pd_handle));
-            bsp_uart_puts("/");
-            bsp_uart_put_u32((uint32_t)uxTaskGetStackHighWaterMark(s_log_handle));
-            bsp_uart_puts("\r\n");
         }
 
         /* Cooperative watchdog: feed IWDG ONLY when all 3 tasks checked in cleanly. */
@@ -783,7 +821,15 @@ static void task_log_entry(void *arg) {
             }
         }
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(50U));
+        /* Wait up to 50ms periodic boundary, or wake immediately on fault notification from Task_Ctrl. */
+        {
+            TickType_t now = xTaskGetTickCount();
+            TickType_t elapsed = now - last_wake;
+            if (elapsed < pdMS_TO_TICKS(50U)) {
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50U) - elapsed);
+            }
+            last_wake = xTaskGetTickCount();
+        }
     }
 }
 

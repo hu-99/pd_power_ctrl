@@ -95,10 +95,37 @@ static int test_prot_otp_debounce_latch_and_hysteresis_clear(void) {
     return 0;
 }
 
+static int test_prot_sensor_loss_latches_only_after_ever_online(void) {
+    prot_fsm_t fsm;
+    prot_cfg_t cfg = make_default_prot_cfg();
+    prot_init(&fsm, &cfg);
+
+    /* Never online yet (offline desk boot): does not latch sensor loss fault. */
+    TEST_ASSERT_TRUE(prot_step_sensor(&fsm, false));
+    TEST_ASSERT_EQ_INT(PROT_FAULT_NONE, fsm.latched_fault);
+
+    /* Sensor comes online on I2C bus. */
+    TEST_ASSERT_TRUE(prot_step_sensor(&fsm, true));
+    TEST_ASSERT_TRUE(fsm.sensor_ever_online);
+    TEST_ASSERT_EQ_INT(PROT_FAULT_NONE, fsm.latched_fault);
+
+    /* Runtime I2C wire disconnect: must immediately trip PROT_FAULT_SENSOR_LOSS in 1 tick. */
+    TEST_ASSERT_TRUE(!prot_step_sensor(&fsm, false));
+    TEST_ASSERT_EQ_INT(PROT_FAULT_SENSOR_LOSS, fsm.latched_fault);
+    TEST_ASSERT_TRUE(!fsm.output_allowed);
+    TEST_ASSERT_TRUE(!prot_step(&fsm, 12000U, 100U, false));
+
+    /* Reconnect sensor and explicitly clear latch. */
+    TEST_ASSERT_TRUE(prot_clear_latch(&fsm, 12000U, 0U, false));
+    TEST_ASSERT_EQ_INT(PROT_FAULT_NONE, fsm.latched_fault);
+    return 0;
+}
+
 int run_prot_ovp_ocp_tests(void) {
     RUN_TEST(test_prot_ignores_transient_spike_and_latches_sustained_ovp);
     RUN_TEST(test_prot_hw_alert_trips_in_single_tick);
     RUN_TEST(test_prot_thermal_derating_curve);
     RUN_TEST(test_prot_otp_debounce_latch_and_hysteresis_clear);
+    RUN_TEST(test_prot_sensor_loss_latches_only_after_ever_online);
     return 0;
 }
