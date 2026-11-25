@@ -3,7 +3,7 @@
 [![MCU](https://img.shields.io/badge/MCU-PY32F003F18P6_(Cortex--M0%2B)-blue)]()
 [![RTOS](https://img.shields.io/badge/RTOS-FreeRTOS_v11.2.0_(Static_NoHeap)-brightgreen)]()
 [![Tests](https://img.shields.io/badge/Host_Tests-26%2F26_Passed-success)]()
-[![Footprint](https://img.shields.io/badge/ROM%2FRAM-36.27KB_%2F_5.87KB-orange)]()
+[![Footprint](https://img.shields.io/badge/ROM%2FRAM-36.52KB_%2F_5.87KB-orange)]()
 [![Bench](https://img.shields.io/badge/Bench_Verified-20.02W_%7C_%C2%B10.02%25-red)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
@@ -51,8 +51,8 @@
 | :--- | :--- | :--- |
 | **恒功率闭环稳态波动** | **`±1 mW` (`±0.02%`)** | `12V + 10Ω` 负载，`5W` 稳态 `4999~5001 mW`，`10W` 稳态 `9996 mW`（`0.04%`） |
 | **满载带载能力** | **`20.02 W`**（`11.74V / 1.719A`） | `10Ω // 15Ω = 6Ω` 并联铝壳电阻，电流采样与外置功率计偏差 `~0.5%` |
-| **Flash / SRAM 占用** | **`36.27 KB` / `5.87 KB`** | 可用 `63.75KB Flash / 7.97KB SRAM`（已扣除末两页 `256B` 黑匣子与顶段 `32B` `NOINIT` 区） |
-| **任务栈高水位余量** | **`HWM = 62 / 80 / 68 words`** | `CTRL(160w)` / `PD(160w)` / `LOG(192w)` 满载运行下剩余 `248B / 320B / 272B`，零堆分配 |
+| **Flash / SRAM 占用** | **`36.52 KB` / `5.87 KB`** | 可用 `63.75KB Flash / 7.97KB SRAM`（已扣除末两页 `256B` 黑匣子与顶段 `32B` `NOINIT` 区） |
+| **任务栈分配与水位** | **静态深 `328 / 272 / 424 B`<br>(`v1.0.0` 实测 `HWM = 62 / 80 / 68w`)** | `CTRL(640B)` / `PD(640B)` / `LOG(768B)`：左侧为本版 Keil `CallGraph` 静态调用深度（不含指针与现场压栈）；右侧为 `v1.0.0` 满载实机剩余水位，加固后待复测 |
 | **彩屏背景存储开销** | **`25.0 KB → 6.25 KB` (4:1)** | Cortex-M0+ 无除法 `BC1/DXT1` 软解（`PSNR 34.66 dB`），RAM 仅占 `1,280B` 条带缓冲 |
 | **宿主机单测与编译** | **`26 / 26` 通过，Keil `0 Error / 0 Warning`** | PC 端 MinGW GCC (`-Wall -Wextra -Werror`) 跑通逻辑层与 Mock I2C/Flash 驱动测试 |
 
@@ -94,10 +94,10 @@ flowchart LR
 | 问题与约束 | 根因分析与设计取舍 | 处理结果 |
 | :--- | :--- | :--- |
 | **`20kHz PWM` 斩波与 `INA219` 采样拍频** | `10Ω` 低占空比斩波下，`INA219` 默认 `4x` 均值（`2.13ms`）与 PWM 周期非整数倍截断产生混叠，稳态功率出现 `±200mW` 波动。按 `20ms` 控制周期将 `INA219` 重配为 **`0x3D67`（分流 `16x` 硬件平均 `8.51ms` + 总压 `4x` `2.13ms` = `10.64ms < 20ms`）**。 | `5W` 稳态波动从 `±200mW` 降至 **`±1mW (±0.02%)`**，`9V` 满载 `I=805mA` 连续 20 帧无跳动。 |
-| **运行中传感器掉线防失控（Fail-Safe）** | 若运行中 I2C 线松动导致 `INA` 读取失败，绝不能回退到仿真数据继续推 PWM。在 `prot_ovp_ocp` 中引入 **`PROT_FAULT_SENSOR_LOSS` (`BBOX_EVT_SENSOR_LOSS`)**：一旦传感器曾在线后掉线，单拍立即锁存故障并清零 PWM；未接传感器的纯桌面仿真默认强制 `duty = 0`（仅显式打开编译宏 `APP_ALLOW_SIM_PWM_OUTPUT=1` 时允许空板发波）。 | 消除传感器断线开环盲推风险，同时在 `HardFault_Handler` / `NMI_Handler` / `configASSERT` / 互斥锁超时路径全部前置强制 `TIM1_CH3` 归零。 |
+| **运行中传感器掉线与上电默认零功率（Fail-Safe）** | 运行中 I2C 线松脱绝不切回仿真数据推 MOS：`prot_step_sensor()` 在曾经上线后一旦读失败，第 1 拍立即切断 PWM，连续 2 拍（`40ms`）失败即锁存 **`PROT_FAULT_SENSOR_LOSS`** 并写黑匣子 `EVT=SNS`（`[SIM]→[LIVE]` 切换时顺带复位 PID 积分防突跳）；未接传感器默认 `duty=0`（需显式置编译宏 `APP_ALLOW_SIM_PWM_OUTPUT=1` 才允许空板发波）；上电默认 **`5V / 0W`** 待机。 | 消除断线开环盲推及上电自启负载风险；`HardFault` / `NMI` / `configASSERT` 入口直接写 `TIM1->CCR3 = 0` 与关 `MOE`（无函数调用防坏栈锁死），拿锁超时亦直接清零。 |
 | **`8KB SRAM` 下的 `160×80` 彩屏刷新** | `160×80` RGB565 全帧需 `25.6KB`（超芯片总 RAM 3 倍）。编写离线 PCA+LS 编码器 (`Tools/img2bc1.py`) 做 **`BC1/DXT1` 4:1 压缩**，M0+ 端用 **`(x*683)>>11`** 替代 `/3` 软除法并在调色板层预交换高低字节，仅开 **`1,280B (160×4)` 单条带缓冲**做脏矩形局部解码叠字，由 `DMA1_CH2 -> SPI1` 发送。 | 背景图 **`25.0KB → 6.25KB`**（`PSNR 34.66 dB`），彩屏子系统仅占 `1.25KB RAM`，低优刷新不阻塞 `20ms` 控制环。 |
 | **快环关断与 Flash 黑匣子异步解耦** | `PY32F003` 页擦写耗时数毫秒且期间阻塞取指。`Task_Ctrl` 触发 `UVP / OVP / OCP / OTP / SNS` 时第 1 拍先清零 PWM 并通过 **`xTaskNotifyGive`** 唤醒最低优先级的 `Task_Log`，在 `Task_Log` 中关中断写末两页 `2×128B` 乒乓 Flash（`seq + IEEE CRC32`）。 | 关断响应保持单拍确定性；Flash 写入与回读校验在低优任务完成，掉电损坏自动回退旧页。 |
-| **`INA219 / INA226` 双芯片兼容与 `PA4 EXTI4`** | 驱动代码最初按 `INA226` 编写（文件保留 `dev_ina226.*` 命名），实板到货为 `INA219`（无 `ALE` 引脚、支持 `3.2A`）。启动时通过 `0xFE == 0x5449` 自动识别芯片：`INA226` 下启用 `PA4 EXTI4` 下降沿硬件中断微秒级关断 PWM（上限 `780mA`）；`INA219` 下关闭 `EXTI4` 防悬空误触发，切换为 `2.0A / 2.5A` 软件两级过流保护。 | 单一固件兼容两款采样模块，并在 `INA226` 模式下提供真正的 `EXTI4` 异步中断关管。 |
+| **`INA219 / INA226` 兼容与 `EXTI4` 原子锁存** | 驱动沿用早期 `dev_ina226.*` 命名，启动探测 `0xFE == 0x5449` 自动识别芯片：`INA226` 下启用 `PA4 EXTI4` 下降沿硬件中断直接清零 `TIM1->CCR3` 并置 `s_alert_irq_latched`，`bsp_pwm_set_duty_permille()` 关中断原子检查该标志防止任务上下文写回 PWM，且仅允许用户发 `C` 清除；`INA219`（无 `ALE`）屏蔽 `EXTI4` 并配 `2.0A / 2.5A` 软件两级 `OCP`。 | 消除 `EXTI4` 与任务写 `CCR3` 的竞态覆盖窗口，也避免大电流伴随 I2C 抖动时误清硬件告警诊断。 |
 
 ---
 
@@ -113,11 +113,11 @@ flowchart LR
 
 > 全系统配置 `configSUPPORT_STATIC_ALLOCATION = 1` / `configSUPPORT_DYNAMIC_ALLOCATION = 0`（`Heap_Size = 0`），开启 `configCHECK_FOR_STACK_OVERFLOW = 2` 与 `HWM` 实时水位监控。
 
-| 任务 | 优先级 | 周期 | 静态栈分配 | 满载实测峰值 / 剩余 (`HWM`) | 核心职责 |
+| 任务 | 优先级 | 周期 | 静态栈分配 | Keil 静态调用深度 / `v1.0.0` 实测剩余 (`HWM`) | 核心职责 |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`Task_Ctrl`** | `3` (最高) | `20 ms` | `160 words` (`640 B`) | `392 B` / **`248 B` (`62w`)** | `INA` 采压采流、定点恒功率 PI、软启动斜坡、OVP/OCP/OTP/断线关管 |
-| **`Task_PD`** | `2` | `50 ms` | `160 words` (`640 B`) | `320 B` / **`320 B` (`80w`)** | `HUSB238` 6 档 PDO 择优协商、`Auto-PD` 饱和自动升挡、`vSafe5V` 停机/故障降压 |
-| **`Task_Log`** | `1` (最低) | `50 ms` | `192 words` (`768 B`) | `496 B` / **`272 B` (`68w`)** | 串口 CLI、`200ms` 彩屏差分刷新、`ulTaskNotifyTake` 异步黑匣子写盘、三任务心跳汇总喂 `IWDG` |
+| **`Task_Ctrl`** | `3` (最高) | `20 ms` | `160 words` (`640 B`) | 静态 `328 B` / **`248 B` (`62w`, v1.0.0 实测)** | `INA` 采压采流、定点恒功率 PI、软启动斜坡、OVP/OCP/OTP/断线关管 |
+| **`Task_PD`** | `2` | `50 ms` | `160 words` (`640 B`) | 静态 `272 B` / **`320 B` (`80w`, v1.0.0 实测)** | `HUSB238` 6 档 PDO 择优协商、`Auto-PD` 饱和自动升挡、`vSafe5V` 停机/故障降压 |
+| **`Task_Log`** | `1` (最低) | `50 ms` | `192 words` (`768 B`) | 静态 `424 B` / **`272 B` (`68w`, v1.0.0 实测)** | 串口 CLI、`200ms` 彩屏差分刷新、`ulTaskNotifyTake` 异步黑匣子写盘、三任务心跳汇总喂 `IWDG` |
 
 **SRAM 内存布局 (`8,192 B / 8.00 KB`)：**
 - **链接器保留顶段 `NOINIT` 遗言区**（`0x20001FE0..0x20001FFF`）：`32 B`（保存 `IWDG` 复位前电压/电流/占空比/存活任务掩码，热复位不清零）
@@ -134,7 +134,7 @@ flowchart LR
 | 类别 | PY32F003 引脚 | 外设 / 复用 | 对接模块与说明 |
 | :--- | :--- | :--- | :--- |
 | **I2C 总线** | `PB6` / `PB7` | `I2C1` (AF6, 100kHz) | 并联 `HUSB238 (0x08)` + `INA219/INA226 (0x40)`（借板载 10k 上拉） |
-| **PWM 功率输出** | `PA0` | `TIM1_CH3` (AF13, 20kHz) | 双 `D4184` MOS 模块 `TRIG/PWM`（内部启用下拉，建议外部并 10k 下拉） |
+| **PWM 功率输出** | `PA0` | `TIM1_CH3` (AF13, 20kHz) | 双 `D4184` MOS 模块 `TRIG/PWM`（复位期间 GPIO 为高阻态，**必须在外部 MOS 输入端并 `10kΩ` 下拉电阻**保证默认关断） |
 | **串口调试** | `PA2` / `PA3` | `USART2` (AF4, 115200) | `CH340` (`3.3V` 档) `RXD / TXD` |
 | **0.96" TFT 彩屏** | `PA5` / `PA7` | `SPI1_SCK / MOSI` (AF0, 12MHz) | 京东方 `ST7735S` `SCL / SDA`（`DMA1_CH2` 发送） |
 | **TFT 控制脚** | `PA1` / `PA6` / `PA12` | 推挽输出 | `RES / DC / CS`；`VCC` 与 `BLK` 接 **`3.3V`（禁接 5V）** |

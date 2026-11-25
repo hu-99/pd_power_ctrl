@@ -28,6 +28,7 @@ typedef struct {
     int16_t otp_shutdown_c;
     int16_t otp_hyst_c;
     uint8_t otp_debounce_ticks;
+    uint8_t sensor_loss_debounce_ticks;
 } prot_cfg_t;
 
 typedef struct {
@@ -37,6 +38,7 @@ typedef struct {
     uint8_t ovp_cnt;
     uint8_t ocp_cnt;
     uint8_t otp_cnt;
+    uint8_t sensor_loss_cnt;
     bool sensor_ever_online;
     bool output_allowed;
 } prot_fsm_t;
@@ -47,8 +49,9 @@ typedef struct {
 void prot_init(prot_fsm_t *fsm, const prot_cfg_t *cfg);
 
 /**
- * @brief Monitor power-sensor I2C link health; latches PROT_FAULT_SENSOR_LOSS (duty=0)
- *        immediately if the sensor was previously online and drops offline.
+ * @brief Monitor power-sensor I2C link health once the sensor has come online.
+ *        Immediately disallows PWM output on any read failure and latches
+ *        PROT_FAULT_SENSOR_LOSS after sensor_loss_debounce_ticks consecutive misses.
  * @return true if sensor link is healthy (or has never been attached yet).
  */
 bool prot_step_sensor(prot_fsm_t *fsm, bool sensor_online);

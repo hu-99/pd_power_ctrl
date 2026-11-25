@@ -116,7 +116,8 @@ static void tim1_ch3_pa0_pwm_init(void) {
     gpio.Mode = LL_GPIO_MODE_ALTERNATE;
     gpio.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
     gpio.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-    gpio.Pull = LL_GPIO_PULL_DOWN;
+    /* External 10k pull-down on MOSFET TRIG/PWM provides reset/Hi-Z safety; internal pull on push-pull is unused. */
+    gpio.Pull = LL_GPIO_PULL_NO;
     gpio.Alternate = LL_GPIO_AF13_TIM1;
     LL_GPIO_Init(GPIOA, &gpio);
 
@@ -763,12 +764,25 @@ void bsp_led_toggle(void) {
 }
 
 void bsp_pwm_set_duty_permille(uint16_t duty_permille) {
-    uint32_t clamped = (duty_permille > 1000U) ? 1000U : duty_permille;
-    uint32_t ccr = (clamped * BSP_PWM_PERIOD) / 1000U;
+    uint32_t primask = __get_PRIMASK();
+    uint32_t clamped;
+    uint32_t ccr;
+
+    /* Check ISR latch + write CCR3 atomically so EXTI4 trip cannot be overwritten by task context. */
+    __disable_irq();
+    if (s_alert_irq_latched) {
+        duty_permille = 0U;
+    }
+    clamped = (duty_permille > 1000U) ? 1000U : duty_permille;
+    ccr = (clamped * BSP_PWM_PERIOD) / 1000U;
     LL_TIM_OC_SetCompareCH3(TIM1, ccr);
+    __set_PRIMASK(primask);
 }
 
 void bsp_alert_exti_set_enabled(bool enable) {
+    if (s_alert_exti_enabled == enable) {
+        return;
+    }
     s_alert_exti_enabled = enable;
     if (enable) {
         LL_EXTI_ClearFlag(LL_EXTI_LINE_4);
@@ -776,26 +790,32 @@ void bsp_alert_exti_set_enabled(bool enable) {
     } else {
         LL_EXTI_DisableIT(LL_EXTI_LINE_4);
         LL_EXTI_ClearFlag(LL_EXTI_LINE_4);
-        s_alert_irq_latched = false;
+        /* Do NOT clear s_alert_irq_latched here: transient I2C errors must not mask EXTI4 fault history. */
     }
 }
 
 void bsp_alert_exti_isr(void) {
     if (s_alert_exti_enabled && (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U)) {
-        LL_TIM_OC_SetCompareCH3(TIM1, 0U);
+        TIM1->CCR3 = 0U;
         s_alert_irq_latched = true;
     }
 }
 
 void bsp_alert_clear_latch(void) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     s_alert_irq_latched = false;
+    __set_PRIMASK(primask);
 }
 
 bool bsp_alert_is_active(void) {
+    if (s_alert_irq_latched) {
+        return true;
+    }
     if (!s_alert_exti_enabled) {
         return false;
     }
-    return s_alert_irq_latched || (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U);
+    return (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_4) == 0U);
 }
 
 const i2c_bus_ops_t *bsp_i2c1_bus(void) {

@@ -82,9 +82,9 @@ typedef struct {
 } app_shared_t;
 
 static app_shared_t s_shared = {
-    .desired_pd_mv = 12000U,
-    .target_power_mw = 2000U,
-    .pd_mv = 12000U,
+    .desired_pd_mv = 5000U,
+    .target_power_mw = 0U,
+    .pd_mv = 5000U,
     .auto_pd_enable = true
 };
 
@@ -192,17 +192,24 @@ static void print_blackbox_dump(void) {
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     (void)xTask;
     (void)pcTaskName;
-    bsp_pwm_set_duty_permille(0U);
+    __disable_irq();
+    if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
+        TIM1->CCR3 = 0U;
+        TIM1->BDTR &= ~TIM_BDTR_MOE;
+    }
     bsp_crumb_update((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
                      0U, 0U, 0U, (uint8_t)s_wdg_alive_mask, 0x80U);
     bsp_uart_puts("\r\n[ERR] RTOS_STACK_OVERFLOW\r\n");
-    __disable_irq();
     for (;;) {
     }
 }
 
 void APP_ErrorHandler(void) {
-    bsp_pwm_set_duty_permille(0U);
+    __disable_irq();
+    if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
+        TIM1->CCR3 = 0U;
+        TIM1->BDTR &= ~TIM_BDTR_MOE;
+    }
     while (1) {
     }
 }
@@ -320,12 +327,12 @@ static void task_pd_entry(void *arg) {
     mock_caps.supported[PD_PROFILE_20V] = true;
     mock_caps.max_current_ma[PD_PROFILE_20V] = 3250U;
 
-    pd_sink_init(&pd_fsm, 12000U);
+    pd_sink_init(&pd_fsm, 5000U);
     pd_auto_boost_init(&auto_boost);
     pd_safe_5v_init(&safe_5v);
 
     for (;;) {
-        uint16_t desired_mv = 12000U;
+        uint16_t desired_mv = 5000U;
         uint16_t live_vbus_mv = 0U;
         uint16_t ibus_ma = 0U;
         uint16_t duty_pm = 0U;
@@ -467,9 +474,11 @@ static void task_ctrl_entry(void *arg) {
         .otp_derate_c = 70,
         .otp_shutdown_c = 85,
         .otp_hyst_c = 5,
-        .otp_debounce_ticks = 3U
+        .otp_debounce_ticks = 3U,
+        .sensor_loss_debounce_ticks = 2U
     };
     bool ina_configured = false;
+    bool prev_ina_ok = false;
     bool husb_online = false;
     uint32_t sim_meas_mw = 0U;
     uint16_t last_duty = 0U;
@@ -480,7 +489,7 @@ static void task_ctrl_entry(void *arg) {
 
     for (;;) {
         uint32_t target_mw = 0U;
-        uint16_t pd_mv = 12000U;
+        uint16_t pd_mv = 5000U;
         uint8_t sim_ovp_ticks = 0U;
         uint8_t sim_otp_ticks = 0U;
         bool clear_req = false;
@@ -552,8 +561,10 @@ static void task_ctrl_entry(void *arg) {
             bsp_alert_exti_set_enabled(false);
             prot.cfg.ocp_soft_ma = prot_cfg.ocp_soft_ma;
             prot.cfg.ocp_hard_ma = prot_cfg.ocp_hard_ma;
+            /* Preserve any latched EXTI4 hardware alert across transient I2C dropouts. */
+            hw_alert = bsp_alert_is_active();
             /* Safe simulation model (PA0 physical PWM output is gated unless APP_ALLOW_SIM_PWM_OUTPUT=1). */
-            vbus_mv = (pd_mv >= 5000U) ? pd_mv : 12000U;
+            vbus_mv = (pd_mv >= 5000U) ? pd_mv : 5000U;
             if (sim_ovp_ticks > 0U) {
                 vbus_mv = 22000U;
             }
@@ -573,12 +584,19 @@ static void task_ctrl_entry(void *arg) {
         }
 
         prot_fault_t prev_fault = prot.latched_fault;
-        bool allow = prot_step_sensor(&prot, ina_ok);
-        allow = prot_step(&prot, vbus_mv, ibus_ma, hw_alert) && allow;
+        /* Evaluate hardware ALERT / electrical limits first so EMI-induced I2C glitches
+         * during an EXTI4 trip still record OCP_H instead of SENSOR_LOSS. */
+        bool allow = prot_step(&prot, vbus_mv, ibus_ma, hw_alert);
+        allow = prot_step_sensor(&prot, ina_ok) && allow;
         allow = prot_step_thermal(&prot, mcu_temp_c) && allow;
         uint16_t duty = 0U;
 
         if (allow) {
+            if (ina_ok && !prev_ina_ok) {
+                /* Discard any offline-simulation PID integrator/slew state when entering live control. */
+                power_pid_reset(&pid);
+                sim_meas_mw = 0U;
+            }
             uint32_t eff_target_mw = prot_thermal_limit_mw(target_mw,
                                                            mcu_temp_c,
                                                            prot_cfg.otp_derate_c,
@@ -643,6 +661,7 @@ static void task_ctrl_entry(void *arg) {
         }
 
         last_duty = duty;
+        prev_ina_ok = ina_ok;
         {
             uint8_t mask = wdg_mark_alive(WDG_BIT_CTRL);
             bsp_crumb_update((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),

@@ -41,22 +41,40 @@ void prot_init(prot_fsm_t *fsm, const prot_cfg_t *cfg) {
     fsm->ovp_cnt = 0U;
     fsm->ocp_cnt = 0U;
     fsm->otp_cnt = 0U;
+    fsm->sensor_loss_cnt = 0U;
     fsm->sensor_ever_online = false;
     fsm->output_allowed = true;
 }
 
 bool prot_step_sensor(prot_fsm_t *fsm, bool sensor_online) {
+    uint8_t limit;
     if (fsm == NULL) {
+        return false;
+    }
+    if (fsm->latched_fault != PROT_FAULT_NONE) {
+        fsm->output_allowed = false;
         return false;
     }
     if (sensor_online) {
         fsm->sensor_ever_online = true;
-    } else if (fsm->sensor_ever_online && (fsm->latched_fault == PROT_FAULT_NONE)) {
-        fsm->latched_fault = PROT_FAULT_SENSOR_LOSS;
-        fsm->output_allowed = false;
-        return false;
+        fsm->sensor_loss_cnt = 0U;
+        return true;
     }
-    return (fsm->latched_fault == PROT_FAULT_NONE);
+    if (!fsm->sensor_ever_online) {
+        fsm->sensor_loss_cnt = 0U;
+        return true;
+    }
+
+    limit = (fsm->cfg.sensor_loss_debounce_ticks == 0U)
+                ? 1U
+                : fsm->cfg.sensor_loss_debounce_ticks;
+    fsm->sensor_loss_cnt = saturate_inc(fsm->sensor_loss_cnt);
+    if (fsm->sensor_loss_cnt >= limit) {
+        fsm->latched_fault = PROT_FAULT_SENSOR_LOSS;
+    }
+    /* Fail-safe: force output off during ANY missing sample, even before latching. */
+    fsm->output_allowed = false;
+    return false;
 }
 
 bool prot_step(prot_fsm_t *fsm,
@@ -183,6 +201,7 @@ bool prot_clear_latch_with_temp(prot_fsm_t *fsm,
     fsm->ovp_cnt = 0U;
     fsm->ocp_cnt = 0U;
     fsm->otp_cnt = 0U;
+    fsm->sensor_loss_cnt = 0U;
     fsm->output_allowed = true;
     return true;
 }

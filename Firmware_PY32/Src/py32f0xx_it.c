@@ -1,14 +1,23 @@
 #include "bsp_board.h"
+#include "bsp_board.h"
 #include "main.h"
 #include "py32f0xx_it.h"
 
 void NMI_Handler(void) {
-    bsp_pwm_set_duty_permille(0U);
+    /* Direct register write avoids function calls if SP/stack is compromised. */
+    if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
+        TIM1->CCR3 = 0U;
+        TIM1->BDTR &= ~TIM_BDTR_MOE;
+    }
 }
 
 void HardFault_Handler(void) {
-    bsp_pwm_set_duty_permille(0U);
     __disable_irq();
+    /* Direct register cutoff avoids stack push so stacked corruption cannot lock up core. */
+    if ((RCC->APBENR2 & RCC_APBENR2_TIM1EN) != 0U) {
+        TIM1->CCR3 = 0U;
+        TIM1->BDTR &= ~TIM_BDTR_MOE;
+    }
     while (1) {
     }
 }
